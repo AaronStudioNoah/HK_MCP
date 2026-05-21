@@ -254,6 +254,7 @@ async def main() -> None:
     parser.add_argument("--stage", choices=["list", "details", "meetings", "stats", "all"], default="all")
     parser.add_argument("--concurrency", type=int, default=32)
     parser.add_argument("--limit", type=int, default=0, help="limit number of group_nos for testing")
+    parser.add_argument("--finalize", action="store_true", help="after success, pack JSONL, drop gitignore line, commit and push")
     args = parser.parse_args()
 
     DATA.mkdir(parents=True, exist_ok=True)
@@ -285,6 +286,82 @@ async def main() -> None:
             await stage_details(client, token, group_nos, args.concurrency)
 
     log("ALL DONE")
+    if args.finalize:
+        finalize_repo()
+
+
+def finalize_repo() -> None:
+    """When download completes, drop the details gitignore, commit and push everything."""
+    import subprocess
+
+    repo = ROOT
+    log("finalize: removing data/customers/details/ from .gitignore")
+    gi = repo / ".gitignore"
+    if gi.exists():
+        lines = gi.read_text().splitlines(keepends=True)
+        kept = [
+            ln
+            for ln in lines
+            if "data/customers/details/" not in ln
+            and "In-progress: per-customer details" not in ln
+            and "Will be removed and committed once download" not in ln
+        ]
+        gi.write_text("".join(kept))
+
+    # Repack details into JSONL per endpoint to keep file count manageable
+    log("finalize: packing details to JSONL")
+    packed_dir = repo / "data" / "customers" / "details_packed"
+    packed_dir.mkdir(parents=True, exist_ok=True)
+    endpoints = ["kyc", "domestic_holdings", "hk_holdings", "sg_holdings", "service_records", "live_information"]
+    details_root = repo / "data" / "customers" / "details"
+    for ep in endpoints:
+        out = packed_dir / f"{ep}.jsonl"
+        if out.exists() and out.stat().st_size > 0:
+            log(f"  {ep}.jsonl already exists, skipping pack")
+            continue
+        count = 0
+        with out.open("w", encoding="utf-8") as fh:
+            for gd in sorted(details_root.iterdir()):
+                if not gd.is_dir():
+                    continue
+                f = gd / f"{ep}.json"
+                if not f.exists():
+                    continue
+                try:
+                    payload = json.loads(f.read_text())
+                except Exception:
+                    continue
+                fh.write(json.dumps({"groupNo": gd.name, "data": payload}, ensure_ascii=False, separators=(",", ":")))
+                fh.write("\n")
+                count += 1
+        log(f"  packed {ep}.jsonl: {count} records")
+
+    log("finalize: git add/commit/push")
+    env = {**os.environ, "GIT_AUTHOR_EMAIL": "aaronkai0002@gmail.com", "GIT_AUTHOR_NAME": "Aaron", "GIT_COMMITTER_EMAIL": "aaronkai0002@gmail.com", "GIT_COMMITTER_NAME": "Aaron"}
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, env=env)
+    msg = (
+        "Add full per-customer details dump (87,437 customers x 6 endpoints)\n"
+        "\n"
+        "- data/customers/details/<group_no>/{kyc,domestic_holdings,hk_holdings,"
+        "sg_holdings,service_records,live_information}.json\n"
+        "- data/customers/details_packed/<endpoint>.jsonl: per-endpoint packed JSONL "
+        "(one line per group_no, easier to diff and consume)\n"
+        "\n"
+        "https://claude.ai/code/session_01NWGserL9Kh4owCjYgpHTtR\n"
+    )
+    res = subprocess.run(["git", "-C", str(repo), "commit", "-m", msg], env=env, capture_output=True, text=True)
+    log(f"  commit: rc={res.returncode} {res.stdout.strip()[:300]}{res.stderr.strip()[:300]}")
+    for attempt in range(4):
+        push = subprocess.run(
+            ["git", "-C", str(repo), "push", "-u", "origin", "claude/download-mcp-data-hk-crm-4RIeg"],
+            env=env, capture_output=True, text=True,
+        )
+        log(f"  push attempt {attempt+1}: rc={push.returncode} {push.stderr.strip()[:300]}")
+        if push.returncode == 0:
+            break
+        import time as _t
+        _t.sleep(2 ** (attempt + 1))
+    log("finalize: done")
 
 
 if __name__ == "__main__":
