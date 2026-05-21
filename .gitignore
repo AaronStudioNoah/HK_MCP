@@ -1,0 +1,10 @@
+# Generated merged index (153MB, exceeds GitHub 100MB limit). Regenerate from list/page_*.json.
+data/customers/list/_index.json
+
+# Logs and tmp files
+data/*.log
+data/download.stdout.log
+*.tmp
+*.error.json
+__pycache__/
+*.pyc
