@@ -1,6 +1,10 @@
 # Generated merged index (153MB, exceeds GitHub 100MB limit). Regenerate from list/page_*.json.
 data/customers/list/_index.json
 
+# In-progress: per-customer details dir is being populated by the downloader.
+# Will be removed and committed once download is complete.
+data/customers/details/
+
 # Logs and tmp files
 data/*.log
 data/download.stdout.log
